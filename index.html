@@ -149,6 +149,11 @@
     <button class="choice-btn" data-n="2">2人</button>
     <button class="choice-btn" data-n="3">3人</button>
   </div>
+  <p>王駒ルール（自陣いちばん奥の駒が「王駒」になり、一直線に並んだ駒を何個でもまとめて飛び越えられます）</p>
+  <div class="choice-row" id="kingChoices">
+    <button class="choice-btn" data-king="off">使わない</button>
+    <button class="choice-btn" data-king="on">使う</button>
+  </div>
   <button id="startBtn" disabled>ゲームをはじめる</button>
 </div>
 
@@ -260,9 +265,30 @@ function jumpKey(c, d){
   return cellMap[k] ? k : null;
 }
 
+// 王駒用: 一直線に並んだ駒(1個以上)をまとめて飛び越えた着地マスを方向ごとに返す
+function kingJumpsFrom(startKey, board){
+  const c0 = cellMap[startKey];
+  const results = {};
+  DIRS.forEach(d => {
+    let cx=c0.x, cy=c0.y, cz=c0.z;
+    let count = 0;
+    while(true){
+      cx+=d[0]; cy+=d[1]; cz+=d[2];
+      const k = keyOf(cx,cy,cz);
+      const cell = cellMap[k];
+      if (!cell) break; // 盤外
+      if (board[k]!==null){ count++; continue; }
+      if (count>=1) results[k] = true;
+      break;
+    }
+  });
+  return results;
+}
+
 // 選択したコマから到達可能なマス一覧（key -> 経路種別 'step' か 'jump'）
 function computeReachable(startKey){
   const board = state.board;
+  const isKing = state.kingKeys && state.kingKeys.has(startKey);
   const result = {};
   // 単純な1歩移動
   const c0 = cellMap[startKey];
@@ -276,17 +302,26 @@ function computeReachable(startKey){
   while(queue.length){
     const curKey = queue.shift();
     const cur = cellMap[curKey];
-    DIRS.forEach(d => {
-      const midKey = neighborKey(cur, d);
-      if (!midKey || board[midKey]===null) return;
-      const landKey = jumpKey(cur, d);
-      if (!landKey || board[landKey]!==null) return;
-      if (visited.has(landKey)) return;
-      visited.add(landKey);
-      result[landKey] = result[landKey] || 'jump';
-      result[landKey] = 'jump';
-      queue.push(landKey);
-    });
+    if (isKing){
+      const kj = kingJumpsFrom(curKey, board);
+      Object.keys(kj).forEach(landKey => {
+        if (visited.has(landKey)) return;
+        visited.add(landKey);
+        result[landKey] = 'jump';
+        queue.push(landKey);
+      });
+    } else {
+      DIRS.forEach(d => {
+        const midKey = neighborKey(cur, d);
+        if (!midKey || board[midKey]===null) return;
+        const landKey = jumpKey(cur, d);
+        if (!landKey || board[landKey]!==null) return;
+        if (visited.has(landKey)) return;
+        visited.add(landKey);
+        result[landKey] = 'jump';
+        queue.push(landKey);
+      });
+    }
   }
   delete result[startKey];
   return result;
@@ -332,6 +367,18 @@ function render(){
       circle.addEventListener('click', (e)=>{ e.stopPropagation(); onPegClick(c.key); });
     }
     svg.appendChild(circle);
+    if (state.kingKeys && state.kingKeys.has(c.key)){
+      const mark = document.createElementNS('http://www.w3.org/2000/svg','text');
+      mark.setAttribute('x', px);
+      mark.setAttribute('y', py);
+      mark.setAttribute('text-anchor', 'middle');
+      mark.setAttribute('dominant-baseline', 'central');
+      mark.setAttribute('font-size', '13');
+      mark.setAttribute('pointer-events', 'none');
+      mark.textContent = '★';
+      mark.setAttribute('fill', '#fff8dc');
+      svg.appendChild(mark);
+    }
   });
 }
 
@@ -373,6 +420,10 @@ function doMove(fromKey, toKey){
   const mover = state.board[fromKey];
   state.board[toKey] = mover;
   state.board[fromKey] = null;
+  if (state.kingKeys && state.kingKeys.has(fromKey)){
+    state.kingKeys.delete(fromKey);
+    state.kingKeys.add(toKey);
+  }
   state.selected = null;
   state.movable = {};
   render();
@@ -432,6 +483,7 @@ function showWin(point){
 
 /* ---------- セットアップ画面 ---------- */
 let chosenHumans = null;
+let chosenKing = false;
 document.querySelectorAll('#humanChoices .choice-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('#humanChoices .choice-btn').forEach(b=>b.classList.remove('selected'));
@@ -440,8 +492,16 @@ document.querySelectorAll('#humanChoices .choice-btn').forEach(btn => {
     document.getElementById('startBtn').disabled = false;
   });
 });
+document.querySelectorAll('#kingChoices .choice-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#kingChoices .choice-btn').forEach(b=>b.classList.remove('selected'));
+    btn.classList.add('selected');
+    chosenKing = btn.dataset.king === 'on';
+  });
+});
+document.querySelector('#kingChoices .choice-btn[data-king="off"]').classList.add('selected');
 document.getElementById('startBtn').addEventListener('click', () => {
-  startGame(chosenHumans);
+  startGame(chosenHumans, chosenKing);
 });
 document.getElementById('restartBtn').addEventListener('click', resetToSetup);
 document.getElementById('winRestart').addEventListener('click', () => {
@@ -455,14 +515,24 @@ function resetToSetup(){
   document.getElementById('winOverlay').style.display = 'none';
 }
 
-function startGame(humanCount){
+function apexKeyOf(point){
+  const c = cells.find(c =>
+    (point==='X+' && c.x===8) ||
+    (point==='Y+' && c.y===8) ||
+    (point==='Z+' && c.z===8)
+  );
+  return c ? c.key : null;
+}
+
+function startGame(humanCount, useKing){
   state = {
     board: setupInitialBoard(),
     humanCount,
     order: [...HOME_POINTS],
     turnIdx: 0,
     selected: null,
-    movable: {}
+    movable: {},
+    kingKeys: new Set(useKing ? HOME_POINTS.map(apexKeyOf) : [])
   };
   document.getElementById('setup').style.display = 'none';
   document.getElementById('game').style.display = 'block';
