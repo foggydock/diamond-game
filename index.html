@@ -285,16 +285,24 @@ function kingJumpsFrom(startKey, board){
   return results;
 }
 
+// 自分の陣地・目標の陣地以外（他プレイヤーの陣地）には入れない
+function isForeignTerritory(ownerPoint, cellKey){
+  const p = cellMap[cellKey].point;
+  if (p === 'C') return false;
+  return p !== ownerPoint && p !== TARGET_OF[ownerPoint];
+}
+
 // 選択したコマから到達可能なマス一覧（key -> 経路種別 'step' か 'jump'）
 function computeReachable(startKey){
   const board = state.board;
+  const owner = board[startKey];
   const isKing = state.kingKeys && state.kingKeys.has(startKey);
   const result = {};
   // 単純な1歩移動
   const c0 = cellMap[startKey];
   DIRS.forEach(d => {
     const nk = neighborKey(c0, d);
-    if (nk && board[nk]===null) result[nk] = 'step';
+    if (nk && board[nk]===null && !isForeignTerritory(owner, nk)) result[nk] = 'step';
   });
   // ジャンプ連鎖（BFS）
   const visited = new Set([startKey]);
@@ -305,7 +313,7 @@ function computeReachable(startKey){
     if (isKing){
       const kj = kingJumpsFrom(curKey, board);
       Object.keys(kj).forEach(landKey => {
-        if (visited.has(landKey)) return;
+        if (visited.has(landKey) || isForeignTerritory(owner, landKey)) return;
         visited.add(landKey);
         result[landKey] = 'jump';
         queue.push(landKey);
@@ -316,7 +324,7 @@ function computeReachable(startKey){
         if (!midKey || board[midKey]===null) return;
         const landKey = jumpKey(cur, d);
         if (!landKey || board[landKey]!==null) return;
-        if (visited.has(landKey)) return;
+        if (visited.has(landKey) || isForeignTerritory(owner, landKey)) return;
         visited.add(landKey);
         result[landKey] = 'jump';
         queue.push(landKey);
