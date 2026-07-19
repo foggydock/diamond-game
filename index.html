@@ -312,7 +312,7 @@ function isForeignTerritory(ownerPoint, cellKey){
   return p !== ownerPoint && p !== TARGET_OF[ownerPoint];
 }
 
-// 選択したコマから到達可能なマス一覧（key -> 経路種別 'step' か 'jump'）
+// 選択したコマから到達可能なマス一覧（key -> {type:'step'|'jump', path:[経由するマスのkey...]}）
 function computeReachable(startKey){
   const board = state.board;
   const owner = board[startKey];
@@ -322,20 +322,22 @@ function computeReachable(startKey){
   const c0 = cellMap[startKey];
   DIRS.forEach(d => {
     const nk = neighborKey(c0, d);
-    if (nk && board[nk]===null && !isForeignTerritory(owner, nk)) result[nk] = 'step';
+    if (nk && board[nk]===null && !isForeignTerritory(owner, nk)) result[nk] = { type:'step', path:[nk] };
   });
-  // ジャンプ連鎖（BFS）
-  const visited = new Set([startKey]);
+  // ジャンプ連鎖（BFS、通過した着地マスの経路も記録）
+  const pathOf = new Map([[startKey, []]]);
   const queue = [startKey];
   while(queue.length){
     const curKey = queue.shift();
     const cur = cellMap[curKey];
+    const curPath = pathOf.get(curKey);
     if (isKing){
       const kj = kingJumpsFrom(curKey, board);
       Object.keys(kj).forEach(landKey => {
-        if (visited.has(landKey) || isForeignTerritory(owner, landKey)) return;
-        visited.add(landKey);
-        result[landKey] = 'jump';
+        if (pathOf.has(landKey) || isForeignTerritory(owner, landKey)) return;
+        const newPath = curPath.concat([landKey]);
+        pathOf.set(landKey, newPath);
+        result[landKey] = { type:'jump', path:newPath };
         queue.push(landKey);
       });
     } else {
@@ -344,9 +346,10 @@ function computeReachable(startKey){
         if (!midKey || board[midKey]===null) return;
         const landKey = jumpKey(cur, d);
         if (!landKey || board[landKey]!==null) return;
-        if (visited.has(landKey) || isForeignTerritory(owner, landKey)) return;
-        visited.add(landKey);
-        result[landKey] = 'jump';
+        if (pathOf.has(landKey) || isForeignTerritory(owner, landKey)) return;
+        const newPath = curPath.concat([landKey]);
+        pathOf.set(landKey, newPath);
+        result[landKey] = { type:'jump', path:newPath };
         queue.push(landKey);
       });
     }
@@ -449,26 +452,45 @@ function onPegClick(key){
 }
 function onCellClick(key){
   if (!state.selected) return;
-  if (!state.movable[key]) return;
-  doMove(state.selected, key);
+  const move = state.movable[key];
+  if (!move) return;
+  doMove(state.selected, move.path);
 }
 
-function doMove(fromKey, toKey){
+// pathに沿って1マスずつコマをホップさせながら移動する
+function doMove(fromKey, path){
   const mover = state.board[fromKey];
-  state.board[toKey] = mover;
+  const wasKing = !!(state.kingKeys && state.kingKeys.has(fromKey));
   state.board[fromKey] = null;
-  if (state.kingKeys && state.kingKeys.has(fromKey)){
-    state.kingKeys.delete(fromKey);
-    state.kingKeys.add(toKey);
-  }
+  if (wasKing) state.kingKeys.delete(fromKey);
   state.selected = null;
   state.movable = {};
   render();
-  if (checkWin(mover)){
-    showWin(mover);
-    return;
+  animateHop(mover, wasKing, path, 0);
+}
+
+function animateHop(mover, wasKing, path, idx){
+  const hopKey = path[idx];
+  const isLast = idx === path.length - 1;
+  state.board[hopKey] = mover;
+  if (wasKing) state.kingKeys.add(hopKey);
+  render();
+  const delay = path.length > 1 ? 380 : 0;
+  if (!isLast){
+    setTimeout(() => {
+      state.board[hopKey] = null;
+      if (wasKing) state.kingKeys.delete(hopKey);
+      animateHop(mover, wasKing, path, idx + 1);
+    }, delay);
+  } else {
+    setTimeout(() => {
+      if (checkWin(mover)){
+        showWin(mover);
+        return;
+      }
+      nextTurn();
+    }, delay);
   }
-  nextTurn();
 }
 
 function nextTurn(){
@@ -493,20 +515,21 @@ function progressValue(point, cellKey){
 function aiMove(){
   const cur = state.order[state.turnIdx];
   const myCells = cells.filter(c => state.board[c.key]===cur).map(c=>c.key);
-  let best = null; // {from,to,gain}
+  let best = null; // {from,path,score}
   myCells.forEach(fromKey => {
     const reach = computeReachable(fromKey);
     Object.keys(reach).forEach(toKey => {
+      const move = reach[toKey];
       const gain = progressValue(cur, toKey) - progressValue(cur, fromKey);
-      const jumpBonus = reach[toKey]==='jump' ? 0.01 : 0; // 僅差ならジャンプ優先
+      const jumpBonus = move.type==='jump' ? 0.01 : 0; // 僅差ならジャンプ優先
       const score = gain + jumpBonus + Math.random()*0.15;
       if (!best || score > best.score){
-        best = { from: fromKey, to: toKey, score };
+        best = { from: fromKey, path: move.path, score };
       }
     });
   });
   if (best){
-    doMove(best.from, best.to);
+    doMove(best.from, best.path);
   } else {
     nextTurn(); // 動けない場合(通常起こらない)
   }
